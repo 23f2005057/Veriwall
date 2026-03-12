@@ -250,13 +250,10 @@ textarea{resize:vertical;min-height:110px;line-height:1.5}
     <select id="idSel" onchange="switchId()">
       <option value="">— who are you? —</option>
       <option value="superadmin">👑 superadmin</option>
-      <option value="alice">alice</option>
-      <option value="bob">bob</option>
-      <option value="carol">carol</option>
-      <option value="custom">custom…</option>
+      <option value="custom">type your admin ID…</option>
     </select>
-    <input type="text" id="customId" placeholder="custom ID" style="display:none"/>
-    <input type="password" id="idSec" placeholder="secret (SA only)" style="display:none"/>
+    <input type="text" id="customId" placeholder="type your admin ID here" style="display:block"/>
+    <input type="password" id="idSec" placeholder="superadmin secret" style="display:none"/>
   </div>
 </nav>
 
@@ -298,7 +295,7 @@ textarea{resize:vertical;min-height:110px;line-height:1.5}
         <input type="password" id="inv-sas" placeholder="superadmin secret"/></div>
       <div class="g2">
         <div class="field"><label>New Admin ID</label>
-          <input type="text" id="inv-id" placeholder="e.g. alice"/></div>
+          <input type="text" id="inv-id" placeholder="your admin ID"/></div>
         <div class="field"><label>New Admin's Public Key (base64)</label>
           <input type="text" id="inv-pub" placeholder="paste from keygen output"/></div>
       </div>
@@ -325,7 +322,7 @@ textarea{resize:vertical;min-height:110px;line-height:1.5}
     <div class="card">
       <div class="ct">Generate Keys</div>
       <div class="field"><label>Admin ID</label>
-        <input type="text" id="kg-id" placeholder="e.g. alice"/></div>
+        <input type="text" id="kg-id" placeholder="your admin ID"/></div>
       <button class="btn bp" onclick="doKeygen()">Generate Key Pair</button>
       <div class="rbox" id="kg-r"></div>
     </div>
@@ -339,7 +336,7 @@ textarea{resize:vertical;min-height:110px;line-height:1.5}
       <div class="ct">New Policy Bundle</div>
       <div class="g2">
         <div class="field"><label>Author (your Admin ID)</label>
-          <input type="text" id="pr-auth" placeholder="e.g. alice"/></div>
+          <input type="text" id="pr-auth" placeholder="your admin ID"/></div>
         <div class="field"><label>Description</label>
           <input type="text" id="pr-desc" placeholder="e.g. Initial firewall rules"/></div>
       </div>
@@ -358,7 +355,7 @@ textarea{resize:vertical;min-height:110px;line-height:1.5}
       <div class="ct">Available Bundles</div>
       <div id="bundle-list"><div style="color:var(--dim);font-size:.75rem">Loading…</div></div>
       <div class="field mt16"><label>Your Admin ID</label>
-        <input type="text" id="sg-admin" placeholder="e.g. alice"/></div>
+        <input type="text" id="sg-admin" placeholder="your admin ID"/></div>
       <button class="btn bg" onclick="doSign()">Sign Selected Bundle</button>
       <div class="rbox" id="sg-r"></div>
     </div>
@@ -397,7 +394,7 @@ textarea{resize:vertical;min-height:110px;line-height:1.5}
   <!-- Demo -->
   <div class="page" id="page-demo">
     <h2>Full Automated Demo</h2>
-    <p class="pd">Wipes all data. Runs: SA setup → vote alice/bob/carol in → policy applied → 3 attacks blocked.</p>
+    <p class="pd">Wipes all data. Runs full flow with 3 auto-named admins (admin1/admin2/admin3) to show the complete workflow.</p>
     <div class="card">
       <div class="ct" style="color:var(--red)">⚠ Destructive — deletes all data</div>
       <button class="btn br" onclick="doDemo()">Run Full Demo</button>
@@ -434,10 +431,18 @@ function showPage(id){
 
 function switchId(){
   const v=document.getElementById('idSel').value;
-  document.getElementById('customId').style.display=v==='custom'?'block':'none';
-  document.getElementById('idSec').style.display=v==='superadmin'?'block':'none';
-  const id=v==='custom'?'':v; if(!id) return;
-  const isSA=v==='superadmin';
+  const ci=document.getElementById('customId');
+  const sec=document.getElementById('idSec');
+  // custom input always shown unless superadmin selected
+  ci.style.display=v==='superadmin'?'none':'block';
+  sec.style.display=v==='superadmin'?'block':'none';
+  if(v==='superadmin'){
+    applyIdentity('superadmin',true);
+  }
+  // for custom, wait for user to type
+}
+function applyIdentity(id, isSA){
+  if(!id.trim()) return;
   const badge=document.getElementById('hdr-who');
   badge.textContent=(isSA?'👑 ':'👤 ')+id;
   badge.className='who'+(isSA?' sa':'');
@@ -725,6 +730,12 @@ document.getElementById('pr-content').value=JSON.stringify({
 
 refreshPanel();
 setInterval(refreshPanel,5000);
+
+// When user types in custom ID field, auto-fill all admin ID inputs
+document.getElementById('customId').addEventListener('input', function(){
+  const id = this.value.trim();
+  if(id) applyIdentity(id, false);
+});
 </script>
 </body>
 </html>"""
@@ -1020,17 +1031,17 @@ def api_demo():
             signers=[SUPERADMIN_ID],detail=f'{SUPERADMIN_ID} self-registered.')
         out.append(f'✅ SUPERADMIN ({SUPERADMIN_ID}) registered')
 
-        # 2. Keys for alice, bob, carol
+        # 2. Keys for admin1, admin2, admin3
         keys = {}
-        for a in ['alice','bob','carol']:
+        for a in ['admin1','admin2','admin3']:
             p, pub = generate_keypair()
             (KEYS_DIR/f'{a}.priv').write_text(p)
             (KEYS_DIR/f'{a}.pub').write_text(pub)
             keys[a] = (p, pub)
-        out.append('✅ Keys generated for alice, bob, carol')
+        out.append('✅ Keys generated for admin1, admin2, admin3')
 
         # 3. SA invites each; existing admins vote; admit
-        for admin in ['alice','bob','carol']:
+        for admin in ['admin1','admin2','admin3']:
             _, pub = keys[admin]
             vid = f"vote_{admin}_demo"
             vote = {"vote_id":vid,"action":"ADD_ADMIN","target_id":admin,"target_pub":pub,
@@ -1060,10 +1071,10 @@ def api_demo():
         policy = {"name":"fw-v1","rules":[
             {"action":"ALLOW","port":443},{"action":"ALLOW","port":22,"from":"10.0.0.0/8"},
             {"action":"DENY","port":"*"}]}
-        bundle = create_bundle(policy,'alice','Initial firewall')
+        bundle = create_bundle(policy,'admin1','Initial firewall')
         bp = BUNDLES_DIR/f"bundle_v{bundle['version']}.json"
         save_bundle(bundle, bp)
-        for a in ['alice','bob']:
+        for a in ['admin1','admin2']:
             b = load_bundle(bp); pk=(KEYS_DIR/f'{a}.priv').read_text().strip()
             msg=canonical_json({'version':b['version'],'content_hash':b['content_hash'],
                 'previous_hash':b['previous_hash'],'timestamp':b['timestamp']})
@@ -1075,7 +1086,7 @@ def api_demo():
             apply_policy(load_bundle(bp))
             audit.log.append(event='POLICY_APPLIED',policy_version=bundle['version'],
                 policy_hash=bundle['content_hash'],signers=r.signers,detail=f'Signers:{r.signers}')
-            out.append(f'\n✅ Policy v1 APPLIED (alice+bob)')
+            out.append(f'\n✅ Policy v1 APPLIED (admin1+admin2)')
 
         # 5. Attacks
         for label, setup in [
@@ -1089,7 +1100,7 @@ def api_demo():
                 p2={"name":"tampered","rules":[{"action":"ALLOW_ALL","port":"*"}]}
                 b2=create_bundle(p2,'eve','hack'); bp2=BUNDLES_DIR/f"bundle_v{b2['version']}.json"
                 save_bundle(b2,bp2)
-                for a in ['alice','bob']:
+                for a in ['admin1','admin2']:
                     bx=load_bundle(bp2); pk=(KEYS_DIR/f'{a}.priv').read_text().strip()
                     msg=canonical_json({'version':bx['version'],'content_hash':bx['content_hash'],'previous_hash':bx['previous_hash'],'timestamp':bx['timestamp']})
                     add_signature(bx,a,sign(pk,msg)); save_bundle(bx,bp2)

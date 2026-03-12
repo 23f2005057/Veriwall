@@ -1311,3 +1311,24 @@ if __name__ == '__main__':
   Network → http://{ip}:{port}
 """)
     app.run(host='0.0.0.0', port=port, debug=False)
+
+
+@app.route('/api/debug/files', methods=['GET'])
+def debug_files():
+    result = {}
+    if BUNDLES_DIR.exists():
+        for p in BUNDLES_DIR.glob('bundle_v*.json'):
+            result[p.name] = json.loads(p.read_text())
+    return jsonify(result)
+
+@app.route('/api/debug/tamper', methods=['POST'])
+def debug_tamper():
+    name = request.json.get('name', 'bundle_v1.json')
+    bp = BUNDLES_DIR / name
+    if not bp.exists():
+        return jsonify(ok=False, message='Bundle not found. Run Full Demo first.')
+    bundle = json.loads(bp.read_text())
+    old_hash = bundle['content_hash']
+    bundle['content']['rules'][0]['action'] = 'ALLOW_ALL'
+    bp.write_text(json.dumps(bundle, indent=2))
+    return jsonify(ok=True, message='Content tampered! Hash unchanged.', old_hash=old_hash)

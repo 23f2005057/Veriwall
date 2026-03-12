@@ -368,8 +368,10 @@ textarea{resize:vertical;min-height:110px;line-height:1.5}
     <div class="card">
       <div class="ct">Select Bundle</div>
       <div id="apply-bundle-list"><div style="color:var(--dim);font-size:.75rem">Loading…</div></div>
-      <div class="field mt16"><label>Threshold k</label>
-        <input type="number" id="ap-k" value="2" min="1" max="10" style="width:80px"/></div>
+      <div class="ib p mt16" id="ap-thresh-info">
+        🔢 Threshold is automatically computed as <strong>floor(n/2) + 1</strong> based on current keyring size.<br/>
+        Loading current value…
+      </div>
       <button class="btn br" onclick="doApply()">Verify &amp; Apply</button>
       <div id="ap-checks" class="checks mt16" style="display:none"></div>
       <div class="rbox" id="ap-r"></div>
@@ -609,9 +611,8 @@ async function doSign(){
 
 // Apply
 async function doApply(){
-  const k=parseInt(document.getElementById('ap-k').value)||2;
   if(!selBundle) return toast('Select a bundle','err');
-  const r=await api('/api/apply',{bundle_path:selBundle,threshold_k:k});
+  const r=await api('/api/apply',{bundle_path:selBundle});
   const ce=document.getElementById('ap-checks');
   if(r.checks){
     ce.style.display='flex';
@@ -698,6 +699,11 @@ async function refreshPanel(){
       :`<span style="color:var(--dim)">none</span>`;
     const pending=(vr.votes||[]).filter(v=>v.status==='pending'||v.status==='ready').length;
     document.getElementById('lv-vt').innerHTML=`<span class="badge ${pending?'bdp':'bdg'}">${pending} pending</span>`;
+    // Update dynamic threshold display on apply page
+    const n = sr.keyring.length;
+    const dynK = Math.floor(n/2)+1;
+    const atEl = document.getElementById('ap-thresh-info');
+    if(atEl) atEl.innerHTML=`🔢 Threshold auto-computed: <strong>floor(${n}/2) + 1 = k=${dynK}</strong> &nbsp;·&nbsp; ${dynK} of ${n} admins must sign.`;
     const vb=document.getElementById('vote-badge');
     vb.textContent=pending; pending?vb.classList.add('show'):vb.classList.remove('show');
     // SA id + threshold displays
@@ -796,13 +802,15 @@ def api_sa_invite():
     for v in load_votes():
         if v['target_id'] == admin_id and v['status'] in ('pending', 'ready'):
             return jsonify(ok=False, message=f'❌ A pending vote for {admin_id} already exists.')
+    # Threshold for admin addition = ALL current admins (unanimous)
+    current_admin_count = len(keyring.all())
     vote_id = f"vote_{admin_id}_{int(datetime.now(timezone.utc).timestamp())}"
     vote = {
         "vote_id":     vote_id,
         "action":      "ADD_ADMIN",
         "target_id":   admin_id,
         "target_pub":  pub_key,
-        "threshold":   POLICY_THRESHOLD,
+        "threshold":   current_admin_count,   # must be signed by ALL current admins
         "timestamp":   ts(),
         "status":      "pending",
         "signatures":  [],
@@ -813,15 +821,21 @@ def api_sa_invite():
         sig = sign(sa_priv.read_text().strip(), vote_message(vote))
         vote["signatures"].append({"admin_id": SUPERADMIN_ID, "signature": sig})
     valid, _ = count_valid_votes(vote)
-    if len(valid) >= POLICY_THRESHOLD:
+    all_admins = list(keyring.all().keys())
+    all_voted = all(any(s["admin_id"] == a for s in vote["signatures"]) for a in all_admins)
+    if all_voted:
         vote["status"] = "ready"
     save_vote(vote)
     audit.log.append(event='VOTE_CREATED', policy_version=0, policy_hash='',
-        signers=[SUPERADMIN_ID], detail=f'Invited {admin_id}. Vote: {vote_id}')
+        signers=[SUPERADMIN_ID], detail=f'Invited {admin_id}. Needs all {current_admin_count} admin(s) to sign.')
+    remaining = current_admin_count - len(valid)
+    note = ('All current admins have voted — ready to admit!'
+            if all_voted else
+            f'Need {remaining} more vote(s). All {current_admin_count} current admin(s) must sign.')
     return jsonify(ok=True,
         message=f'✅ Invitation created for {admin_id}\nVote ID: {vote_id}\n'
-                f'Threshold: k={POLICY_THRESHOLD}\nSuperadmin auto-signed (1 vote cast).\n\n'
-                f'Share the vote page URL with other admins to collect votes.')
+                f'Requires: ALL {current_admin_count} current admin(s) to sign (unanimous)\n'
+                f'Superadmin auto-signed (1/{current_admin_count})\n\n{note}')
 
 @app.route('/api/votes', methods=['POST'])
 def api_votes():
@@ -829,15 +843,18 @@ def api_votes():
     result = []
     for v in votes:
         valid, _ = count_valid_votes(v)
+        all_admins = list(Keyring().all().keys())
+        waiting = [a for a in all_admins if a not in valid]
         result.append({
             "vote_id":    v["vote_id"],
             "target_id":  v["target_id"],
             "target_pub": v["target_pub"],
-            "threshold":  v["threshold"],
+            "threshold":  len(all_admins),   # always = total admins
             "status":     v["status"],
             "timestamp":  v["timestamp"],
             "valid_sigs": len(valid),
             "signers":    valid,
+            "waiting":    waiting,
             "proposed_by": v.get("proposed_by", ""),
         })
     return jsonify(ok=True, votes=result)
@@ -863,15 +880,21 @@ def api_vote_sign():
     sig = sign(priv_path.read_text().strip(), vote_message(vote))
     vote["signatures"].append({"admin_id": admin_id, "signature": sig})
     valid, _ = count_valid_votes(vote)
-    if len(valid) >= vote["threshold"]:
+    all_admins = list(Keyring().all().keys())
+    # Unanimous: every current admin must have signed
+    all_voted = all(any(s["admin_id"] == a for s in vote["signatures"]) for a in all_admins)
+    if all_voted:
         vote["status"] = "ready"
     save_vote(vote)
     audit.log.append(event='VOTE_SIGNED', policy_version=0, policy_hash='',
-        signers=[admin_id], detail=f'{admin_id} voted for {vote["target_id"]}. {len(valid)}/{vote["threshold"]}')
-    msg = f'✅ {admin_id} signed vote for {vote["target_id"]}\n{len(valid)}/{vote["threshold"]} valid signatures'
-    if len(valid) >= vote["threshold"]:
-        msg += '\n\n🎉 Threshold met! Click "Admit Admin" to finalize.'
-    return jsonify(ok=True, message=msg, threshold_met=len(valid) >= vote["threshold"])
+        signers=[admin_id], detail=f'{admin_id} voted for {vote["target_id"]}. {len(valid)}/{len(all_admins)} unanimous')
+    msg = f'✅ {admin_id} signed vote for {vote["target_id"]}\n{len(valid)}/{len(all_admins)} admins signed (unanimous required)'
+    if all_voted:
+        msg += '\n\n🎉 All admins signed! Click "Admit Admin" to finalize.'
+    else:
+        remaining = [a for a in all_admins if not any(s["admin_id"]==a for s in vote["signatures"])]
+        msg += f'\n\nStill waiting for: {", ".join(remaining)}'
+    return jsonify(ok=True, message=msg, threshold_met=all_voted)
 
 @app.route('/api/votes/approve', methods=['POST'])
 def api_vote_approve():
@@ -884,8 +907,11 @@ def api_vote_approve():
     if vote["status"] == "pending":
         return jsonify(ok=False, message='Threshold not met yet.')
     valid, _ = count_valid_votes(vote)
-    if len(valid) < vote["threshold"]:
-        return jsonify(ok=False, message=f'Only {len(valid)}/{vote["threshold"]} valid signatures.')
+    all_admins = list(Keyring().all().keys())
+    all_voted = all(any(s["admin_id"] == a for s in vote["signatures"]) for a in all_admins)
+    if not all_voted:
+        missing = [a for a in all_admins if not any(s["admin_id"]==a for s in vote["signatures"])]
+        return jsonify(ok=False, message=f'❌ Unanimous vote required. Still waiting for: {", ".join(missing)}')
     keyring = Keyring()
     if keyring.get(vote["target_id"]):
         return jsonify(ok=False, message=f'{vote["target_id"]} already in keyring.')
@@ -968,11 +994,14 @@ def api_sign():
 @app.route('/api/apply', methods=['POST'])
 def api_apply():
     data = request.json
-    k    = int(data.get('threshold_k', POLICY_THRESHOLD))
+    keyring = Keyring()
+    n = len(keyring.all())
+    # Dynamic majority: floor(n/2) + 1  — ignores any manual k input
+    k = (n // 2) + 1
     try:
         bundle  = load_bundle(data.get('bundle_path', ''))
         state   = load_state()
-        result  = verify_bundle(bundle=bundle, keyring=Keyring().all(),
+        result  = verify_bundle(bundle=bundle, keyring=keyring.all(),
             active_content_hash=state['active_content_hash'],
             active_version=state['active_version'], threshold_k=k)
         evt = 'POLICY_APPLIED' if result.passed else 'POLICY_REJECTED'
@@ -980,9 +1009,9 @@ def api_apply():
         audit.log.append(event=evt, policy_version=bundle.get('version',0),
             policy_hash=bundle.get('content_hash',''), signers=result.signers,
             detail=result.error or f'Signers: {result.signers}', checks=result.checks)
-        msg = (f'✅ Policy v{bundle["version"]} APPLIED\nSigners: {", ".join(result.signers)}'
-               if result.passed else f'❌ REJECTED\n{result.error}')
-        return jsonify(ok=result.passed, message=msg,
+        msg = (f'✅ Policy v{bundle["version"]} APPLIED\nSigners: {", ".join(result.signers)}\nThreshold used: k={k} (majority of {n} admins)'
+               if result.passed else f'❌ REJECTED (k={k} required, {n} admins in keyring)\n{result.error}')
+        return jsonify(ok=result.passed, message=msg, threshold_used=k, admin_count=n,
             checks=[{'check':c['check'],'passed':c['passed'],'detail':c['detail']} for c in result.checks])
     except Exception as e:
         return jsonify(ok=False, message=str(e), checks=[])
@@ -1020,7 +1049,6 @@ def api_demo():
         _patch_paths()
 
         out = []
-        K   = POLICY_THRESHOLD
 
         # 1. Superadmin setup
         sa_priv, sa_pub = generate_keypair()
@@ -1044,8 +1072,9 @@ def api_demo():
         for admin in ['admin1','admin2','admin3']:
             _, pub = keys[admin]
             vid = f"vote_{admin}_demo"
+            current_n = len(Keyring().all())  # unanimous = all current admins
             vote = {"vote_id":vid,"action":"ADD_ADMIN","target_id":admin,"target_pub":pub,
-                    "threshold":K,"timestamp":ts(),"status":"pending","signatures":[],"proposed_by":SUPERADMIN_ID}
+                    "threshold":current_n,"timestamp":ts(),"status":"pending","signatures":[],"proposed_by":SUPERADMIN_ID}
             sig = sign(sa_priv, vote_message(vote))
             vote["signatures"].append({"admin_id":SUPERADMIN_ID,"signature":sig})
             out.append(f'  📨 SA invited {admin} → vote created + SA signed')
@@ -1056,13 +1085,18 @@ def api_demo():
                 if ep.exists():
                     vote["signatures"].append({"admin_id":existing,"signature":sign(ep.read_text().strip(), vote_message(vote))})
             valid, _ = count_valid_votes(vote)
-            if len(valid) >= K:
+            all_admins_now = list(Keyring().all().keys())
+            all_voted = all(any(s["admin_id"]==a for s in vote["signatures"]) for a in all_admins_now)
+            needed = len(all_admins_now)
+            if all_voted:
                 vote["status"] = "approved"
                 Keyring().add(admin, pub)
                 (KEYS_DIR/f'{admin}.pub').write_text(pub)
                 audit.log.append(event='ADMIN_ADMITTED',policy_version=0,policy_hash='',
-                    signers=valid,detail=f'{admin} admitted by {len(valid)}/{K} votes.')
-                out.append(f'  🗳️  {len(valid)}/{K} votes → {admin} ADMITTED')
+                    signers=valid,detail=f'{admin} admitted unanimously by {len(valid)}/{needed}.')
+                out.append(f'  🗳️  {len(valid)}/{needed} unanimous → {admin} ADMITTED')
+            else:
+                out.append(f'  ⏳ {len(valid)}/{needed} — not all admins voted for {admin}')
             save_vote(vote)
 
         out.append(f'\n✅ Keyring: {list(Keyring().all().keys())}')
@@ -1074,19 +1108,26 @@ def api_demo():
         bundle = create_bundle(policy,'admin1','Initial firewall')
         bp = BUNDLES_DIR/f"bundle_v{bundle['version']}.json"
         save_bundle(bundle, bp)
-        for a in ['admin1','admin2']:
+        # Sign with exactly floor(n/2)+1 admins (dynamic majority)
+        all_admins_list = list(Keyring().all().keys())
+        n_now = len(all_admins_list)
+        dyn_k_now = (n_now // 2) + 1
+        signers_for_demo = all_admins_list[:dyn_k_now]
+        for a in signers_for_demo:
             b = load_bundle(bp); pk=(KEYS_DIR/f'{a}.priv').read_text().strip()
             msg=canonical_json({'version':b['version'],'content_hash':b['content_hash'],
                 'previous_hash':b['previous_hash'],'timestamp':b['timestamp']})
             add_signature(b, a, sign(pk,msg)); save_bundle(b,bp)
         state=load_state()
+        n_admins = len(Keyring().all())
+        dyn_k = (n_admins // 2) + 1
         r=verify_bundle(bundle=load_bundle(bp),keyring=Keyring().all(),
-            active_content_hash=state['active_content_hash'],active_version=state['active_version'],threshold_k=K)
+            active_content_hash=state['active_content_hash'],active_version=state['active_version'],threshold_k=dyn_k)
         if r.passed:
             apply_policy(load_bundle(bp))
             audit.log.append(event='POLICY_APPLIED',policy_version=bundle['version'],
                 policy_hash=bundle['content_hash'],signers=r.signers,detail=f'Signers:{r.signers}')
-            out.append(f'\n✅ Policy v1 APPLIED (admin1+admin2)')
+            out.append(f'\n✅ Policy v1 APPLIED (k={dyn_k} of {n_admins} admins)')
 
         # 5. Attacks
         for label, setup in [
@@ -1100,7 +1141,9 @@ def api_demo():
                 p2={"name":"tampered","rules":[{"action":"ALLOW_ALL","port":"*"}]}
                 b2=create_bundle(p2,'eve','hack'); bp2=BUNDLES_DIR/f"bundle_v{b2['version']}.json"
                 save_bundle(b2,bp2)
-                for a in ['admin1','admin2']:
+                # Use first k admins to sign tampered bundle (before tamper)
+                tamper_k = (len(Keyring().all()) // 2) + 1
+                for a in list(Keyring().all().keys())[:tamper_k]:
                     bx=load_bundle(bp2); pk=(KEYS_DIR/f'{a}.priv').read_text().strip()
                     msg=canonical_json({'version':bx['version'],'content_hash':bx['content_hash'],'previous_hash':bx['previous_hash'],'timestamp':bx['timestamp']})
                     add_signature(bx,a,sign(pk,msg)); save_bundle(bx,bp2)
@@ -1114,8 +1157,9 @@ def api_demo():
                 msg3=canonical_json({'version':bx3['version'],'content_hash':bx3['content_hash'],'previous_hash':bx3['previous_hash'],'timestamp':bx3['timestamp']})
                 add_signature(bx3,'eve',sign(eve_pk,msg3)); save_bundle(bx3,bp3)
                 b2=load_bundle(bp3); st=load_state()
+            n2 = len(Keyring().all()); dyn_k2 = (n2 // 2) + 1
             r2=verify_bundle(bundle=b2,keyring=Keyring().all(),
-                active_content_hash=st['active_content_hash'],active_version=st['active_version'],threshold_k=K)
+                active_content_hash=st['active_content_hash'],active_version=st['active_version'],threshold_k=dyn_k2)
             audit.log.append(event='POLICY_REJECTED',policy_version=b2.get('version',0),
                 policy_hash=b2.get('content_hash',''),signers=r2.signers,detail=r2.error or '')
             out.append(f'❌ {label} attack REJECTED: {r2.error}')

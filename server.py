@@ -421,6 +421,25 @@ textarea{resize:vertical;min-height:110px;line-height:1.5}
   <div id="recent-ev"><div style="color:var(--dim);font-size:.7rem">No events yet.</div></div>
 </aside>
 </div>
+<!-- Refuse Modal -->
+<div id="refuse-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:200;align-items:center;justify-content:center">
+  <div style="background:var(--surf);border:1px solid var(--red);border-radius:12px;padding:24px;width:360px;max-width:94vw">
+    <div style="font-family:var(--sans);font-weight:800;font-size:1rem;color:var(--red);margin-bottom:6px">🚫 Refuse Invitation</div>
+    <div style="font-size:.73rem;color:var(--dim);margin-bottom:14px">You are refusing admission for: <strong id="refuse-target" style="color:var(--text)"></strong></div>
+    <div class="field">
+      <label>Your Admin ID</label>
+      <input type="text" id="refuse-admin" placeholder="your admin ID"/>
+    </div>
+    <div class="field">
+      <label>Reason (optional)</label>
+      <input type="text" id="refuse-reason" placeholder="e.g. Unverified identity"/>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:6px">
+      <button class="btn br" style="flex:1" onclick="confirmRefuse()">Confirm Refusal</button>
+      <button class="btn" style="background:var(--muted);color:var(--text);flex:1" onclick="closeRefuseModal()">Cancel</button>
+    </div>
+  </div>
+</div>
 <div id="toast"></div>
 
 <script>
@@ -534,10 +553,19 @@ async function loadVotes(){
       <div style="font-size:.68rem;color:var(--dim);margin-bottom:8px">
         Signed by: <span style="color:var(--accent)">${v.signers.join(', ')||'none yet'}</span>
       </div>
-      ${!isDone?`<div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn bpu bsm" onclick="doVoteSign('${v.vote_id}')">✍️ Sign as <span id="vsw-${v.vote_id}">${document.getElementById('v-signer').value||'…'}</span></button>
-        ${met?`<button class="btn bg bsm" onclick="doApprove('${v.vote_id}')">✅ Admit Admin</button>`:''}
-      </div>`:'<span class="badge bdg">✓ Admitted</span>'}
+      ${v.status==='rejected'
+        ?`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span class="badge bdr">🚫 REFUSED</span>
+            ${v.rejected_by?`<span style="font-size:.65rem;color:var(--dim)">by <strong style="color:var(--red)">${v.rejected_by}</strong>${v.reject_reason?' · <em>'+v.reject_reason+'</em>':''}</span>`:''}
+          </div>`
+        :isDone
+          ?'<span class="badge bdg">✓ Admitted</span>'
+          :`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+              <button class="btn bpu bsm" onclick="doVoteSign('${v.vote_id}')">✍️ Sign as <span id="vsw-${v.vote_id}">${document.getElementById('v-signer').value||'…'}</span></button>
+              ${met?`<button class="btn bg bsm" onclick="doApprove('${v.vote_id}')">✅ Admit Admin</button>`:''}
+              <button class="btn br bsm" onclick="openRefuseModal('${v.vote_id}','${v.target_id}')">🚫 Refuse</button>
+            </div>`
+      }
     </div>`;
   }).join('');
 }
@@ -553,6 +581,33 @@ async function doApprove(vote_id){
   const r=await api('/api/votes/approve',{vote_id});
   toast(r.ok?'✅ Admin admitted!':r.message,r.ok?'ok':'err');
   loadVotes(); refreshPanel();
+}
+
+let _refuseVoteId=null;
+function openRefuseModal(vote_id, target_id){
+  _refuseVoteId=vote_id;
+  document.getElementById('refuse-target').textContent=target_id;
+  const adminVal=document.getElementById('v-signer').value.trim();
+  document.getElementById('refuse-admin').value=adminVal;
+  document.getElementById('refuse-reason').value='';
+  const m=document.getElementById('refuse-modal');
+  m.style.display='flex';
+  document.getElementById('refuse-admin').focus();
+}
+function closeRefuseModal(){
+  document.getElementById('refuse-modal').style.display='none';
+  _refuseVoteId=null;
+}
+async function confirmRefuse(){
+  const admin_id=document.getElementById('refuse-admin').value.trim();
+  const reason=document.getElementById('refuse-reason').value.trim();
+  if(!admin_id) return toast('Enter your admin ID first','err');
+  if(!_refuseVoteId) return;
+  const r=await api('/api/votes/reject',{vote_id:_refuseVoteId, admin_id, reason});
+  closeRefuseModal();
+  toast(r.ok?'🚫 Invitation refused & logged':r.message, r.ok?'err':'err');
+  loadVotes(); refreshPanel();
+  if(document.getElementById('page-audit').classList.contains('active')) loadAudit();
 }
 
 // Keygen - local only
@@ -662,11 +717,12 @@ async function loadAudit(){
   const el=document.getElementById('audit-entries');
   if(!r.entries.length){el.innerHTML='<div style="color:var(--dim);font-size:.75rem">Empty.</div>';return}
   const cm={POLICY_APPLIED:'ap',POLICY_REJECTED:'rj',ADMIN_REGISTERED:'sa',
-    VOTE_SIGNED:'vt',ADMIN_ADMITTED:'sa',SA_REGISTERED:'sa',VOTE_CREATED:'vt'};
+    VOTE_SIGNED:'vt',ADMIN_ADMITTED:'sa',SA_REGISTERED:'sa',VOTE_CREATED:'vt',VOTE_REJECTED:'rj'};
+  const goodEvts=['POLICY_APPLIED','ADMIN_ADMITTED','SA_REGISTERED','ADMIN_REGISTERED','VOTE_SIGNED','VOTE_CREATED'];
   el.innerHTML=r.entries.slice().reverse().map(e=>`
     <div class="le ${cm[e.event]||''}">
       <div style="font-weight:600;margin-bottom:2px">
-        <span class="badge ${['POLICY_APPLIED','ADMIN_ADMITTED','SA_REGISTERED','ADMIN_REGISTERED'].includes(e.event)?'bdg':'bdr'}" style="font-size:.6rem">${e.event}</span>
+        <span class="badge ${goodEvts.includes(e.event)?'bdg':'bdr'}" style="font-size:.6rem">${e.event}</span>
         ${e.policy_version?'v'+e.policy_version:''}
       </div>
       <div style="color:var(--dim);font-size:.63rem">${e.timestamp.slice(0,19).replace('T',' ')} · ${e.signers.join(', ')||'—'}</div>
@@ -709,13 +765,14 @@ async function refreshPanel(){
     // Recent events
     const recent=(ar.entries||[]).slice(-5).reverse();
     const cm={POLICY_APPLIED:'ap',POLICY_REJECTED:'rj',ADMIN_REGISTERED:'sa',
-      VOTE_SIGNED:'vt',ADMIN_ADMITTED:'sa',SA_REGISTERED:'sa',VOTE_CREATED:'vt'};
+      VOTE_SIGNED:'vt',ADMIN_ADMITTED:'sa',SA_REGISTERED:'sa',VOTE_CREATED:'vt',VOTE_REJECTED:'rj'};
+    const goodEv=['POLICY_APPLIED','ADMIN_ADMITTED','SA_REGISTERED'];
     document.getElementById('recent-ev').innerHTML=recent.length
       ?recent.map(e=>`
         <div class="le ${cm[e.event]||''}">
           <div style="font-weight:600;font-size:.68rem">
-            <span class="badge ${['POLICY_APPLIED','ADMIN_ADMITTED','SA_REGISTERED'].includes(e.event)?'bdg':'bdr'}" style="font-size:.58rem">
-              ${e.event.replace('POLICY_','').replace('ADMIN_','').replace('SA_','')}
+            <span class="badge ${goodEv.includes(e.event)?'bdg':'bdr'}" style="font-size:.58rem">
+              ${e.event.replace('POLICY_','').replace('ADMIN_','').replace('SA_','').replace('VOTE_','')}
             </span>
           </div>
           <div style="color:var(--dim);font-size:.62rem">${e.timestamp.slice(11,19)}</div>
@@ -832,16 +889,18 @@ def api_votes():
         all_admins = list(Keyring().all().keys())
         waiting = [a for a in all_admins if a not in valid]
         result.append({
-            "vote_id":    v["vote_id"],
-            "target_id":  v["target_id"],
-            "target_pub": v["target_pub"],
-            "threshold":  len(all_admins),   # always = total admins
-            "status":     v["status"],
-            "timestamp":  v["timestamp"],
-            "valid_sigs": len(valid),
-            "signers":    valid,
-            "waiting":    waiting,
-            "proposed_by": v.get("proposed_by", ""),
+            "vote_id":       v["vote_id"],
+            "target_id":     v["target_id"],
+            "target_pub":    v["target_pub"],
+            "threshold":     len(all_admins),
+            "status":        v["status"],
+            "timestamp":     v["timestamp"],
+            "valid_sigs":    len(valid),
+            "signers":       valid,
+            "waiting":       waiting,
+            "proposed_by":   v.get("proposed_by", ""),
+            "rejected_by":   v.get("rejected_by", ""),
+            "reject_reason": v.get("reject_reason", ""),
         })
     return jsonify(ok=True, votes=result)
 
@@ -873,8 +932,8 @@ def api_vote_approve():
         return jsonify(ok=False, message='Vote bundle not found.')
     if vote["status"] == "approved":
         return jsonify(ok=False, message='Already approved.')
-    if vote["status"] == "pending":
-        return jsonify(ok=False, message='Threshold not met yet.')
+    if vote["status"] == "rejected":
+        return jsonify(ok=False, message='❌ Cannot approve — this invitation was already refused.')
     valid, _ = count_valid_votes(vote)
     all_admins = list(Keyring().all().keys())
     all_voted = all(any(s["admin_id"] == a for s in vote["signatures"]) for a in all_admins)
@@ -892,6 +951,43 @@ def api_vote_approve():
         signers=valid, detail=f'{vote["target_id"]} admitted. Approved by: {", ".join(valid)}')
     return jsonify(ok=True,
         message=f'✅ {vote["target_id"]} admitted to keyring!\nApproved by: {", ".join(valid)}\nKeyring: {len(keyring)} members.')
+
+@app.route('/api/votes/reject', methods=['POST'])
+def api_vote_reject():
+    data     = request.json
+    vote_id  = data.get('vote_id', '')
+    admin_id = data.get('admin_id', '').strip()
+    reason   = data.get('reason', '').strip() or 'No reason given'
+
+    vote = load_vote(vote_id)
+    if not vote:
+        return jsonify(ok=False, message='Vote bundle not found.')
+    if vote['status'] == 'approved':
+        return jsonify(ok=False, message='❌ Cannot reject — vote already approved.')
+    if vote['status'] == 'rejected':
+        return jsonify(ok=False, message='❌ Vote already rejected.')
+
+    # Any registered admin (or superadmin) may explicitly reject
+    keyring = Keyring()
+    if not keyring.get(admin_id) and admin_id != SUPERADMIN_ID:
+        return jsonify(ok=False, message=f'❌ {admin_id} is not a registered admin.')
+
+    vote['status']      = 'rejected'
+    vote['rejected_by'] = admin_id
+    vote['reject_reason'] = reason
+    vote['rejected_at'] = ts()
+    save_vote(vote)
+
+    audit.log.append(
+        event='VOTE_REJECTED',
+        policy_version=0,
+        policy_hash='',
+        signers=[admin_id],
+        detail=f'Invitation for {vote["target_id"]} explicitly REFUSED by {admin_id}. Reason: {reason}',
+    )
+    return jsonify(ok=True,
+        message=f'🚫 Invitation for {vote["target_id"]} refused by {admin_id}.\nReason: {reason}')
+
 
 @app.route('/api/keygen', methods=['POST'])
 def api_keygen():

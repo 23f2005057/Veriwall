@@ -261,20 +261,23 @@ textarea{resize:vertical;min-height:110px;line-height:1.5}
   <!-- SA Setup -->
   <div class="page active" id="page-sasetup">
     <h2>Superadmin Setup</h2>
-    <p class="pd">The superadmin is the root of trust. They register once using a special secret — no vote required. After that, they invite admins whose additions require threshold voting.</p>
+    <p class="pd">The superadmin is the root of trust. Generate your keys locally, then register your public key here. Your private key never leaves your machine.</p>
     <div class="ib o">👑 Superadmin ID: <strong id="sa-id-disp">…</strong>
-      &nbsp;·&nbsp; Set via <code>SUPERADMIN_ID</code> env var.<br/>
-      Secret set via <code>SUPERADMIN_SECRET</code> env var (never shown in UI).
+      &nbsp;·&nbsp; Secret set via <code>SUPERADMIN_SECRET</code> env var.
     </div>
     <div class="card">
-      <div class="ct o">Step 1 — Generate Superadmin Keys</div>
-      <div class="field"><label>Superadmin Secret</label>
-        <input type="password" id="sa-sk1" placeholder="superadmin secret"/></div>
-      <button class="btn bo" onclick="doSAKeygen()">Generate SA Key Pair</button>
-      <div class="rbox" id="sa-kg-r"></div>
+      <div class="ct o">Step 1 — Generate Keys on YOUR Machine</div>
+      <p style="font-size:.74rem;color:var(--dim);margin-bottom:10px">Run this command in your terminal (not on the server):</p>
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 14px;font-size:.8rem;color:var(--green);display:flex;align-items:center;justify-content:space-between">
+        <span id="sa-cmd">python local_keygen.py superadmin</span>
+        <button class="btn bp bsm" onclick="copyCmd('sa-cmd')">Copy</button>
+      </div>
+      <p style="font-size:.68rem;color:var(--dim);margin-top:8px">This creates <code>superadmin.priv</code> (keep secret) and <code>superadmin.pub</code> on your machine.<br/>Your terminal will print your public key — copy it for Step 2.</p>
     </div>
     <div class="card">
-      <div class="ct o">Step 2 — Self-Register (No Vote Needed)</div>
+      <div class="ct o">Step 2 — Register Your Public Key</div>
+      <div class="field"><label>Your Public Key (from local_keygen.py output)</label>
+        <input type="text" id="sa-pubkey" placeholder="paste your base64 public key here"/></div>
       <div class="field"><label>Superadmin Secret</label>
         <input type="password" id="sa-sk2" placeholder="superadmin secret"/></div>
       <button class="btn bo" onclick="doSAReg()">Register as Superadmin</button>
@@ -309,8 +312,11 @@ textarea{resize:vertical;min-height:110px;line-height:1.5}
     <h2>Vote on Admin Invitations</h2>
     <p class="pd">Sign a vote bundle to approve a new admin. Once k valid signatures are collected, the "Admit Admin" button appears.</p>
     <div class="field" style="margin-bottom:16px">
-      <label>Your Admin ID</label>
-      <input type="text" id="v-signer" placeholder="your admin ID"/>
+      <label>Your Admin ID (updates commands below)</label>
+      <input type="text" id="v-signer" placeholder="your admin ID" oninput="updateVoteCmds()"/>
+    </div>
+    <div class="ib p" style="margin-bottom:14px">
+      🔐 Signing is done locally. Run <code>local_sign.py</code> on your machine — it will list pending votes.
     </div>
     <div id="vote-list"><div style="color:var(--dim);font-size:.75rem">Loading…</div></div>
   </div>
@@ -451,6 +457,7 @@ function applyIdentity(id, isSA){
   ['kg-id','sg-admin','pr-auth','v-signer'].forEach(fid=>{
     const el=document.getElementById(fid); if(el) el.value=id;
   });
+  updateKgCmd(); updateSignCmd(); updateVoteCmds();
 }
 
 function toast(msg,type='ok'){
@@ -468,18 +475,12 @@ async function api(path,body={}){
 }
 
 // SA Setup
-async function doSAKeygen(){
-  const s=document.getElementById('sa-sk1').value.trim();
-  if(!s) return toast('Enter superadmin secret','err');
-  const r=await api('/api/sa/keygen',{secret:s});
-  setRes('sa-kg-r',r.message,r.ok);
-  toast(r.ok?'SA keys generated':r.message,r.ok?'ok':'err');
-  refreshPanel();
-}
 async function doSAReg(){
+  const pub=document.getElementById('sa-pubkey').value.trim();
   const s=document.getElementById('sa-sk2').value.trim();
-  if(!s) return toast('Enter superadmin secret','err');
-  const r=await api('/api/sa/register',{secret:s});
+  if(!pub) return toast('Paste your public key first','err');
+  if(!s)   return toast('Enter superadmin secret','err');
+  const r=await api('/api/sa/register',{secret:s,public_key:pub});
   setRes('sa-rg-r',r.message,r.ok);
   toast(r.ok?'Superadmin registered!':r.message,r.ok?'ok':'err');
   refreshPanel();
@@ -541,12 +542,12 @@ async function loadVotes(){
   }).join('');
 }
 
-async function doVoteSign(vote_id){
-  const signer=document.getElementById('v-signer').value.trim();
-  if(!signer) return toast('Enter your admin ID first','err');
-  const r=await api('/api/votes/sign',{vote_id,admin_id:signer});
-  toast(r.ok?'Vote signed!':r.message,r.ok?'ok':'err');
-  loadVotes(); refreshPanel();
+// Vote signing done locally via local_sign.py
+function updateVoteCmds(){
+  const id=document.getElementById('v-signer').value.trim()||'<your_id>';
+  document.querySelectorAll('[id^="vcmd-"]').forEach(el=>{
+    el.textContent=`python local_sign.py ${id} <server_url>`;
+  });
 }
 async function doApprove(vote_id){
   const r=await api('/api/votes/approve',{vote_id});
@@ -554,13 +555,18 @@ async function doApprove(vote_id){
   loadVotes(); refreshPanel();
 }
 
-// Keygen
-async function doKeygen(){
-  const id=document.getElementById('kg-id').value.trim();
-  if(!id) return toast('Enter admin ID','err');
-  const r=await api('/api/keygen',{admin_id:id});
-  setRes('kg-r',r.message,r.ok);
-  toast(r.ok?'Keys generated for '+id:r.message,r.ok?'ok':'err');
+// Keygen - local only
+function updateKgCmd(){
+  const id=document.getElementById('kg-id').value.trim()||'yourname';
+  document.getElementById('kg-cmd').textContent=`python local_keygen.py ${id}`;
+}
+function updateSignCmd(){
+  const id=document.getElementById('sg-admin').value.trim()||'<your_id>';
+  document.getElementById('sg-cmd').textContent=`python local_sign.py ${id} <server_url>`;
+}
+function copyCmd(id){
+  const txt=document.getElementById(id).textContent;
+  navigator.clipboard.writeText(txt).then(()=>toast('Copied!','ok'));
 }
 
 // Propose
@@ -598,16 +604,7 @@ function selBun(path,name,page){
   const el=document.getElementById('bi-'+name); if(el) el.style.borderColor='var(--accent)';
 }
 
-// Sign
-async function doSign(){
-  const admin=document.getElementById('sg-admin').value.trim();
-  if(!admin) return toast('Enter your admin ID','err');
-  if(!selBundle) return toast('Select a bundle','err');
-  const r=await api('/api/sign',{bundle_path:selBundle,admin_id:admin});
-  setRes('sg-r',r.message,r.ok);
-  toast(r.ok?admin+' signed bundle':r.message,r.ok?'ok':'err');
-  loadBundles('sign'); refreshPanel();
-}
+// Sign - local only, no server-side signing
 
 // Apply
 async function doApply(){
@@ -754,35 +751,36 @@ def index():
 
 @app.route('/api/sa/keygen', methods=['POST'])
 def api_sa_keygen():
-    if request.json.get('secret') != SUPERADMIN_SECRET:
-        return jsonify(ok=False, message='❌ Invalid superadmin secret.')
-    KEYS_DIR.mkdir(parents=True, exist_ok=True)
-    priv_path = KEYS_DIR / f"{SUPERADMIN_ID}.priv"
-    pub_path  = KEYS_DIR / f"{SUPERADMIN_ID}.pub"
-    if priv_path.exists():
-        return jsonify(ok=True, message=f'Keys already exist.\nPublic: {pub_path.read_text().strip()[:32]}…')
-    priv_b64, pub_b64 = generate_keypair()
-    priv_path.write_text(priv_b64)
-    pub_path.write_text(pub_b64)
-    return jsonify(ok=True, message=f'✅ Keys generated for {SUPERADMIN_ID}\nPublic key: {pub_b64[:32]}…')
+    return jsonify(ok=False, message='❌ Server-side key generation is disabled.\nRun: python local_keygen.py superadmin')
 
 @app.route('/api/sa/register', methods=['POST'])
 def api_sa_register():
-    if request.json.get('secret') != SUPERADMIN_SECRET:
+    data    = request.json
+    secret  = data.get('secret', '')
+    pub_key = data.get('public_key', '').strip()
+    if secret != SUPERADMIN_SECRET:
         audit.log.append(event='REGISTRATION_DENIED', policy_version=0, policy_hash='',
-            signers=[], detail='Wrong SA secret')
+            signers=[], detail='Wrong SA secret attempt')
         return jsonify(ok=False, message='❌ Invalid superadmin secret.')
-    pub_path = KEYS_DIR / f"{SUPERADMIN_ID}.pub"
-    if not pub_path.exists():
-        return jsonify(ok=False, message='❌ No keys found. Run SA keygen first.')
+    if not pub_key:
+        return jsonify(ok=False, message='❌ public_key is required.\nRun local_keygen.py superadmin and paste your public key here.')
+    # Validate it looks like a base64 ed25519 key (44 chars)
+    import base64
+    try:
+        raw = base64.b64decode(pub_key)
+        if len(raw) != 32:
+            return jsonify(ok=False, message='❌ Invalid public key — must be a 32-byte Ed25519 key encoded in base64.')
+    except Exception:
+        return jsonify(ok=False, message='❌ Invalid public key format — must be base64 encoded.')
     keyring = Keyring()
     if keyring.get(SUPERADMIN_ID):
         return jsonify(ok=True, message=f'✅ {SUPERADMIN_ID} already registered.')
-    pub_b64 = pub_path.read_text().strip()
-    keyring.add(SUPERADMIN_ID, pub_b64)
+    KEYS_DIR.mkdir(parents=True, exist_ok=True)
+    (KEYS_DIR / f"{SUPERADMIN_ID}.pub").write_text(pub_key)
+    keyring.add(SUPERADMIN_ID, pub_key)
     audit.log.append(event='SA_REGISTERED', policy_version=0, policy_hash='',
-        signers=[SUPERADMIN_ID], detail=f'{SUPERADMIN_ID} self-registered as root of trust.')
-    return jsonify(ok=True, message=f'✅ Superadmin ({SUPERADMIN_ID}) registered as root of trust.\nKeyring: {len(keyring)} member(s).')
+        signers=[SUPERADMIN_ID], detail=f'{SUPERADMIN_ID} registered. Public key stored. Private key is LOCAL only.')
+    return jsonify(ok=True, message=f'✅ Superadmin ({SUPERADMIN_ID}) registered as root of trust.\nPublic key stored on server.\nPrivate key stays on your machine.\nKeyring: {len(keyring)} member(s).')
 
 @app.route('/api/sa/invite', methods=['POST'])
 def api_sa_invite():
@@ -816,26 +814,14 @@ def api_sa_invite():
         "signatures":  [],
         "proposed_by": SUPERADMIN_ID,
     }
-    sa_priv = KEYS_DIR / f"{SUPERADMIN_ID}.priv"
-    if sa_priv.exists():
-        sig = sign(sa_priv.read_text().strip(), vote_message(vote))
-        vote["signatures"].append({"admin_id": SUPERADMIN_ID, "signature": sig})
-    valid, _ = count_valid_votes(vote)
-    all_admins = list(keyring.all().keys())
-    all_voted = all(any(s["admin_id"] == a for s in vote["signatures"]) for a in all_admins)
-    if all_voted:
-        vote["status"] = "ready"
     save_vote(vote)
     audit.log.append(event='VOTE_CREATED', policy_version=0, policy_hash='',
         signers=[SUPERADMIN_ID], detail=f'Invited {admin_id}. Needs all {current_admin_count} admin(s) to sign.')
-    remaining = current_admin_count - len(valid)
-    note = ('All current admins have voted — ready to admit!'
-            if all_voted else
-            f'Need {remaining} more vote(s). All {current_admin_count} current admin(s) must sign.')
     return jsonify(ok=True,
         message=f'✅ Invitation created for {admin_id}\nVote ID: {vote_id}\n'
-                f'Requires: ALL {current_admin_count} current admin(s) to sign (unanimous)\n'
-                f'Superadmin auto-signed (1/{current_admin_count})\n\n{note}')
+                f'Requires: ALL {current_admin_count} current admin(s) to sign (unanimous)\n\n'
+                f'Now run local_sign.py on each admin\'s machine to cast votes:\n'
+                f'  python local_sign.py <admin_id> <server_url>')
 
 @app.route('/api/votes', methods=['POST'])
 def api_votes():
@@ -874,27 +860,10 @@ def api_vote_sign():
         return jsonify(ok=False, message=f'❌ {admin_id} is not a registered admin. Cannot vote.')
     if any(s["admin_id"] == admin_id for s in vote["signatures"]):
         return jsonify(ok=False, message=f'❌ {admin_id} already signed this vote.')
-    priv_path = KEYS_DIR / f"{admin_id}.priv"
-    if not priv_path.exists():
-        return jsonify(ok=False, message=f'❌ No private key for {admin_id} on this server.')
-    sig = sign(priv_path.read_text().strip(), vote_message(vote))
-    vote["signatures"].append({"admin_id": admin_id, "signature": sig})
-    valid, _ = count_valid_votes(vote)
-    all_admins = list(Keyring().all().keys())
-    # Unanimous: every current admin must have signed
-    all_voted = all(any(s["admin_id"] == a for s in vote["signatures"]) for a in all_admins)
-    if all_voted:
-        vote["status"] = "ready"
-    save_vote(vote)
-    audit.log.append(event='VOTE_SIGNED', policy_version=0, policy_hash='',
-        signers=[admin_id], detail=f'{admin_id} voted for {vote["target_id"]}. {len(valid)}/{len(all_admins)} unanimous')
-    msg = f'✅ {admin_id} signed vote for {vote["target_id"]}\n{len(valid)}/{len(all_admins)} admins signed (unanimous required)'
-    if all_voted:
-        msg += '\n\n🎉 All admins signed! Click "Admit Admin" to finalize.'
-    else:
-        remaining = [a for a in all_admins if not any(s["admin_id"]==a for s in vote["signatures"])]
-        msg += f'\n\nStill waiting for: {", ".join(remaining)}'
-    return jsonify(ok=True, message=msg, threshold_met=all_voted)
+    return jsonify(ok=False,
+        message=f'❌ Server-side signing is disabled. Private keys must stay local.\n\n'
+                f'Run this on {admin_id}\'s machine:\n'
+                f'  python local_sign.py {admin_id} <server_url>')
 
 @app.route('/api/votes/approve', methods=['POST'])
 def api_vote_approve():
@@ -926,20 +895,8 @@ def api_vote_approve():
 
 @app.route('/api/keygen', methods=['POST'])
 def api_keygen():
-    admin_id = request.json.get('admin_id', '').strip()
-    if not admin_id:
-        return jsonify(ok=False, message='admin_id required')
-    KEYS_DIR.mkdir(parents=True, exist_ok=True)
-    priv_path = KEYS_DIR / f"{admin_id}.priv"
-    pub_path  = KEYS_DIR / f"{admin_id}.pub"
-    if priv_path.exists():
-        pub = pub_path.read_text().strip()
-        return jsonify(ok=True, message=f'Keys exist.\n\nPublic key (share with superadmin):\n{pub}')
-    priv_b64, pub_b64 = generate_keypair()
-    priv_path.write_text(priv_b64)
-    pub_path.write_text(pub_b64)
-    return jsonify(ok=True,
-        message=f'✅ Keys generated for {admin_id}\n\nPublic key (share with superadmin to get invited):\n{pub_b64}')
+    return jsonify(ok=False,
+        message='❌ Server-side key generation is disabled.\nGenerate keys locally:\n  python local_keygen.py <your_name>')
 
 @app.route('/api/propose', methods=['POST'])
 def api_propose():
@@ -972,24 +929,11 @@ def api_bundles():
 
 @app.route('/api/sign', methods=['POST'])
 def api_sign():
-    data        = request.json
-    bundle_path = data.get('bundle_path', '')
-    admin_id    = data.get('admin_id', '').strip()
-    if not Keyring().get(admin_id):
-        return jsonify(ok=False, message=f'❌ {admin_id} not registered.')
-    priv_path = KEYS_DIR / f"{admin_id}.priv"
-    if not priv_path.exists():
-        return jsonify(ok=False, message=f'No private key for {admin_id}.')
-    try:
-        bundle = load_bundle(bundle_path)
-        msg    = canonical_json({'version':bundle['version'],'content_hash':bundle['content_hash'],
-            'previous_hash':bundle['previous_hash'],'timestamp':bundle['timestamp']})
-        sig    = sign(priv_path.read_text().strip(), msg)
-        add_signature(bundle, admin_id, sig)
-        save_bundle(bundle, bundle_path)
-        return jsonify(ok=True, message=f'✅ {admin_id} signed bundle.\nSig: {sig[:32]}…\nTotal: {len(bundle["signatures"])}')
-    except Exception as e:
-        return jsonify(ok=False, message=str(e))
+    admin_id = request.json.get('admin_id','').strip()
+    return jsonify(ok=False,
+        message=f'❌ Server-side signing is disabled. Private keys must stay local.\n\n'
+                f'Run this on {admin_id or "your"} machine:\n'
+                f'  python local_sign.py {admin_id or "<your_name>"} <server_url>')
 
 @app.route('/api/apply', methods=['POST'])
 def api_apply():
@@ -1059,14 +1003,15 @@ def api_demo():
             signers=[SUPERADMIN_ID],detail=f'{SUPERADMIN_ID} self-registered.')
         out.append(f'✅ SUPERADMIN ({SUPERADMIN_ID}) registered')
 
-        # 2. Keys for admin1, admin2, admin3
+        # 2. Keys for admin1, admin2, admin3 — generated in-memory (simulating local_keygen.py)
+        # In real usage each person runs local_keygen.py on their own machine
         keys = {}
         for a in ['admin1','admin2','admin3']:
             p, pub = generate_keypair()
-            (KEYS_DIR/f'{a}.priv').write_text(p)
+            (KEYS_DIR/f'{a}.priv').write_text(p)   # demo only — real use: stays local
             (KEYS_DIR/f'{a}.pub').write_text(pub)
             keys[a] = (p, pub)
-        out.append('✅ Keys generated for admin1, admin2, admin3')
+        out.append('✅ Keys generated locally (demo simulates local_keygen.py)')
 
         # 3. SA invites each; existing admins vote; admit
         for admin in ['admin1','admin2','admin3']:
@@ -1164,11 +1109,103 @@ def api_demo():
                 policy_hash=b2.get('content_hash',''),signers=r2.signers,detail=r2.error or '')
             out.append(f'❌ {label} attack REJECTED: {r2.error}')
 
+        # Remove all .priv files — demo only writes them temporarily to simulate local signing
+        # In real usage private keys NEVER touch the server
+        for pf in KEYS_DIR.glob('*.priv'):
+            pf.unlink()
         out.append('\n🏁 Demo complete.')
+        out.append('🔐 Demo .priv files wiped from server (real usage: keys never leave your machine)')
         return jsonify(ok=True, output='\n'.join(out))
     except Exception as e:
         import traceback
         return jsonify(ok=False, output=traceback.format_exc())
+
+
+@app.route('/api/vote_info', methods=['POST'])
+def api_vote_info():
+    """Return the signable message for a vote bundle — used by local_sign.py."""
+    vote_id = request.json.get('vote_id', '').strip()
+    vote    = load_vote(vote_id)
+    if not vote:
+        pending = [v['vote_id'] for v in load_votes() if v['status'] in ('pending','ready')]
+        return jsonify(ok=False, message=f'Vote not found. Pending votes: {pending}')
+    msg_dict = {
+        "action":     vote["action"],
+        "target_id":  vote["target_id"],
+        "target_pub": vote["target_pub"],
+        "vote_id":    vote["vote_id"],
+        "timestamp":  vote["timestamp"],
+    }
+    valid, _ = count_valid_votes(vote)
+    all_admins = list(Keyring().all().keys())
+    return jsonify(
+        ok=True,
+        vote_id=vote["vote_id"],
+        target_id=vote["target_id"],
+        target_pub=vote["target_pub"],
+        status=vote["status"],
+        threshold=len(all_admins),
+        valid_sigs=len(valid),
+        signers=valid,
+        waiting=[a for a in all_admins if a not in valid],
+        message_to_sign=canonical_json(msg_dict).decode(),
+    )
+
+
+@app.route('/api/votes/sign_external', methods=['POST'])
+def api_vote_sign_external():
+    """Accept a locally-computed signature for a vote bundle."""
+    data      = request.json
+    admin_id  = data.get('admin_id', '').strip()
+    vote_id   = data.get('vote_id', '').strip()
+    signature = data.get('signature', '').strip()
+
+    if not admin_id or not vote_id or not signature:
+        return jsonify(ok=False, message='admin_id, vote_id, and signature are required.')
+
+    # Must be registered admin
+    keyring = Keyring()
+    pub_b64 = keyring.get(admin_id)
+    if not pub_b64:
+        return jsonify(ok=False, message=f'❌ {admin_id} is not a registered admin.')
+
+    vote = load_vote(vote_id)
+    if not vote:
+        return jsonify(ok=False, message=f'Vote bundle not found: {vote_id}')
+    if vote["status"] == "approved":
+        return jsonify(ok=False, message='This vote is already approved.')
+
+    # Already signed?
+    if any(s["admin_id"] == admin_id for s in vote["signatures"]):
+        return jsonify(ok=False, message=f'❌ {admin_id} already signed this vote.')
+
+    # Verify signature
+    msg = vote_message(vote)
+    if not verify_signature(pub_b64, msg, signature):
+        audit.log.append(event='VOTE_REJECTED', policy_version=0, policy_hash='',
+            signers=[], detail=f'Invalid vote signature from {admin_id} for {vote["target_id"]}')
+        return jsonify(ok=False, message=f'❌ Signature verification failed. Does not match {admin_id}\'s registered public key.')
+
+    vote["signatures"].append({"admin_id": admin_id, "signature": signature})
+    all_admins = list(keyring.all().keys())
+    all_voted = all(any(s["admin_id"] == a for s in vote["signatures"]) for a in all_admins)
+    if all_voted:
+        vote["status"] = "ready"
+    save_vote(vote)
+
+    valid, _ = count_valid_votes(vote)
+    audit.log.append(event='VOTE_SIGNED', policy_version=0, policy_hash='',
+        signers=[admin_id], detail=f'{admin_id} voted for {vote["target_id"]}. {len(valid)}/{len(all_admins)} unanimous')
+
+    msg_out = f'✅ {admin_id} vote accepted for {vote["target_id"]}\n{len(valid)}/{len(all_admins)} admins signed'
+    if all_voted:
+        msg_out += '\n\n🎉 Unanimous! Go to Vote on Admins → Admit Admin.'
+    else:
+        waiting = [a for a in all_admins if not any(s["admin_id"]==a for s in vote["signatures"])]
+        msg_out += f'\nStill waiting for: {", ".join(waiting)}'
+
+    return jsonify(ok=True, message=msg_out, all_voted=all_voted,
+        valid_sigs=len(valid), total=len(all_admins))
 
 
 @app.route('/api/bundle_info', methods=['POST'])

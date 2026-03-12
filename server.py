@@ -1126,6 +1126,96 @@ def api_demo():
         import traceback
         return jsonify(ok=False, output=traceback.format_exc())
 
+
+@app.route('/api/bundle_info', methods=['POST'])
+def api_bundle_info():
+    """Return the signable message fields for a bundle — used by local_sign.py."""
+    bundle_name = request.json.get('bundle_name', '').strip()
+    # Accept either a name like "bundle_v1.json" or a full path
+    if '/' in bundle_name or '\\' in bundle_name:
+        bp = Path(bundle_name)
+    else:
+        bp = BUNDLES_DIR / bundle_name
+    if not bp.exists():
+        # list available
+        available = [p.name for p in sorted(BUNDLES_DIR.glob('bundle_v*.json'))]
+        return jsonify(ok=False, message=f'Bundle not found. Available: {available}')
+    bundle = load_bundle(bp)
+    # The exact message that must be signed (same as api/sign)
+    msg_dict = {
+        'version':       bundle['version'],
+        'content_hash':  bundle['content_hash'],
+        'previous_hash': bundle['previous_hash'],
+        'timestamp':     bundle['timestamp'],
+    }
+    return jsonify(
+        ok=True,
+        bundle_name=bp.name,
+        bundle_path=str(bp),
+        version=bundle['version'],
+        author=bundle['author'],
+        description=bundle.get('description',''),
+        content_hash=bundle['content_hash'],
+        previous_hash=bundle['previous_hash'],
+        timestamp=bundle['timestamp'],
+        sig_count=len(bundle['signatures']),
+        signers=[s['admin_id'] for s in bundle['signatures']],
+        message_to_sign=canonical_json(msg_dict).decode(),
+    )
+
+
+@app.route('/api/sign_external', methods=['POST'])
+def api_sign_external():
+    """Accept a pre-computed signature from a local key (local_sign.py flow)."""
+    data      = request.json
+    admin_id  = data.get('admin_id', '').strip()
+    bundle_path = data.get('bundle_path', '').strip()
+    signature = data.get('signature', '').strip()
+
+    if not admin_id or not bundle_path or not signature:
+        return jsonify(ok=False, message='admin_id, bundle_path, and signature are required.')
+
+    # Admin must be in keyring
+    keyring = Keyring()
+    pub_b64 = keyring.get(admin_id)
+    if not pub_b64:
+        return jsonify(ok=False, message=f'❌ {admin_id} is not a registered admin.')
+
+    bp = Path(bundle_path)
+    if not bp.exists():
+        bp = BUNDLES_DIR / bundle_path
+    if not bp.exists():
+        return jsonify(ok=False, message=f'Bundle not found: {bundle_path}')
+
+    bundle = load_bundle(bp)
+
+    # Verify the signature is valid BEFORE accepting it
+    msg = canonical_json({
+        'version':       bundle['version'],
+        'content_hash':  bundle['content_hash'],
+        'previous_hash': bundle['previous_hash'],
+        'timestamp':     bundle['timestamp'],
+    })
+
+    if not verify_signature(pub_b64, msg, signature):
+        audit.log.append(event='POLICY_REJECTED', policy_version=bundle.get('version',0),
+            policy_hash=bundle.get('content_hash',''), signers=[],
+            detail=f'Invalid external signature from {admin_id}')
+        return jsonify(ok=False, message=f'❌ Signature verification failed. The signature does not match {admin_id}\'s registered public key.')
+
+    # Check not already signed
+    if any(s['admin_id'] == admin_id for s in bundle['signatures']):
+        return jsonify(ok=False, message=f'❌ {admin_id} has already signed this bundle.')
+
+    add_signature(bundle, admin_id, signature)
+    save_bundle(bundle, bp)
+
+    total = len(bundle['signatures'])
+    return jsonify(
+        ok=True,
+        message=f'✅ External signature from {admin_id} verified and accepted.\nSig: {signature[:32]}…\nTotal signatures: {total}'
+    )
+
 if __name__ == '__main__':
     port = int(os.getenv("PORT", 5000))
     import socket

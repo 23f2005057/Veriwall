@@ -1427,3 +1427,31 @@ def debug_tamper():
     bundle['content']['rules'][0]['action'] = 'ALLOW_ALL'
     bp.write_text(json.dumps(bundle, indent=2))
     return jsonify(ok=True, message='Content tampered! Hash unchanged.', old_hash=old_hash)
+
+@app.route('/api/debug/tamper_audit', methods=['POST'])
+def debug_tamper_audit():
+    """Simulate attacker editing audit log to hide evidence."""
+    log_path = _au.LOG_PATH
+    if not log_path.exists():
+        return jsonify(ok=False, message='No audit log yet. Run Full Demo first.')
+    
+    lines = log_path.read_text().strip().splitlines()
+    if len(lines) < 2:
+        return jsonify(ok=False, message='Need at least 2 log entries.')
+    
+    # Attacker edits the FIRST entry to hide the SA registration
+    entries = [json.loads(l) for l in lines]
+    original_event = entries[0]['event']
+    entries[0]['event'] = 'HIDDEN'          # hide the event
+    entries[0]['detail'] = 'entry deleted'  # wipe the detail
+    
+    # Write back — prev_hash values are now WRONG
+    with log_path.open('w') as f:
+        for e in entries:
+            f.write(json.dumps(e, separators=(',', ':')) + '\n')
+    
+    return jsonify(
+        ok=True,
+        message=f'Audit log tampered! Entry 0 changed from "{original_event}" to "HIDDEN"',
+        warning='prev_hash chain is now broken — system will detect this'
+    )
